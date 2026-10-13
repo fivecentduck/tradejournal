@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en" data-style="minimal" data-anim="on">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Trade Journal</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Crect width='48' height='48' rx='11' fill='%230e131b'/%3E%3Cpath d='M9 33 L19 22 L27 28 L40 13' fill='none' stroke='%235aa7ff' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="auth" class="auth hide"></div>
+
+  <div id="loader" class="loader hide">
+    <div class="loader-inner">
+      <div class="mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" width="56" height="56"><path class="mark-line" d="M6 34 L17 22 L26 29 L42 11" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="loader-name">Trade Journal</div>
+      <div class="loader-kind" id="loaderKind">Tip</div>
+      <p class="loader-tip" id="loaderTip"></p>
+      <div class="loader-bar"><div id="loaderFill"></div></div>
+    </div>
+  </div>
+
+  <div class="app" id="app">
+    <aside class="side">
+      <button class="btn primary new-btn" data-act="new">New trade</button>
+      <nav class="nav" id="nav"></nav>
+      <div class="side-foot" id="sideFoot"></div>
+    </aside>
+    <main class="main" id="main"><div id="view" class="view"></div></main>
+  </div>
+
+  <div id="modal" class="modal" aria-hidden="true"></div>
+  <div id="toasts" class="toasts"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
