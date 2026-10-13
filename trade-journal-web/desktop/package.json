@@ -1,0 +1,32 @@
+{
+  "name": "trade-journal-desktop",
+  "productName": "Trade Journal",
+  "version": "2.0.0",
+  "description": "Mac app for Trade Journal. Signs in to your hosted account and syncs with the web version.",
+  "main": "main.js",
+  "author": "You",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.local.tradejournal",
+    "productName": "Trade Journal",
+    "files": ["main.js", "preload.js", "setup.html", "offline.html", "app-config.json"],
+    "directories": { "buildResources": "build", "output": "dist" },
+    "mac": {
+      "category": "public.app-category.finance",
+      "target": [{ "target": "dmg", "arch": ["arm64"] }],
+      "icon": "build/icon.png"
+    },
+    "dmg": {
+      "title": "Trade Journal",
+      "contents": [{ "x": 150, "y": 190 }, { "x": 390, "y": 190, "type": "link", "path": "/Applications" }]
+    }
+  }
+}

@@ -9,19 +9,53 @@ class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-/* ---------- Redis (Upstash REST, no dependencies) ---------- */
-async function redis(...cmd) {
-  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
-  if (!url || !token) throw new HttpError(500, 'Database is not configured.');
-  const r = await fetch(url, {
+/* ---------- Redis ----------
+   Works with either:
+   - a standard Redis URL (REDIS_URL, what Vercel's "Redis" integration provides), or
+   - Upstash REST (UPSTASH_REDIS_REST_URL/TOKEN or KV_REST_API_URL/TOKEN).
+*/
+const restUrl = () => process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+const restToken = () => process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+const tcpUrl = () => process.env.REDIS_URL || process.env.KV_URL;
+
+let tcpClient = null;
+async function getTcpClient() {
+  if (tcpClient && tcpClient.isOpen) return tcpClient;
+  const { createClient } = require('redis');
+  const c = createClient({ url: tcpUrl(), socket: { connectTimeout: 8000, reconnectStrategy: false } });
+  c.on('error', e => console.error('redis client error', e.message));
+  await c.connect();
+  tcpClient = c;
+  return c;
+}
+async function viaTcp(cmd) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const c = await getTcpClient();
+      return await c.sendCommand(cmd);
+    } catch (e) {
+      console.error('redis tcp error', e.message);
+      try { if (tcpClient) tcpClient.disconnect(); } catch (_) { /* ignore */ }
+      tcpClient = null; // reconnect on retry (serverless connections can go stale)
+      if (attempt === 1) throw new HttpError(500, 'Database error.');
+    }
+  }
+}
+async function viaRest(cmd) {
+  const r = await fetch(restUrl(), {
     method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(cmd.map(x => (typeof x === 'number' ? x : String(x))))
+    headers: { Authorization: `Bearer ${restToken()}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(cmd)
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok || j.error) { console.error('redis error', j.error); throw new HttpError(500, 'Database error.'); }
+  if (!r.ok || j.error) { console.error('redis rest error', j.error); throw new HttpError(500, 'Database error.'); }
   return j.result;
+}
+async function redis(...cmd) {
+  const args = cmd.map(x => String(x));
+  if (restUrl() && restToken()) return viaRest(cmd.map(x => (typeof x === 'number' ? x : String(x))));
+  if (tcpUrl()) return viaTcp(args);
+  throw new HttpError(500, 'Database is not configured.');
 }
 
 /* ---------- Secrets & hashing ---------- */

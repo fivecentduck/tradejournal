@@ -3,8 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "description": "A simple futures day trading journal with accounts, hosted on Vercel",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vercel dev"
+  },
+  "dependencies": {
+    "redis": "^4.7.0"
   }
 }

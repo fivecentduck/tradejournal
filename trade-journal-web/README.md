@@ -1,6 +1,6 @@
 # Trade Journal (web)
 
-A simple futures day trading journal with accounts. Static frontend + Vercel serverless API + Upstash Redis.
+A simple futures day trading journal with accounts. Static frontend + Vercel serverless API + Redis.
 
 Features: open positions, close positions, full trade entry, trade log, P&L calendar, P&L chart, starting balance,
 contract list (ES, MES, NQ, MNQ, NNQ, YM, MYM, RTY, M2K, CL, MCL, GC, MGC, SI, SIL + custom), per-contract fees,
@@ -19,8 +19,9 @@ contract list (ES, MES, NQ, MNQ, NNQ, YM, MYM, RTY, M2K, CL, MCL, GC, MGC, SI, S
 
 2. **Import it on Vercel.** vercel.com > Add New > Project > pick the repo. Leave all build settings as they are and click Deploy
    (the first deploy will load but sign-in won't work until steps 3 and 4).
-3. **Add a database.** In your Vercel project open **Storage** > **Marketplace** > **Upstash** > **Redis**, create a free database,
-   and connect it to the project. Vercel adds the connection variables (`KV_REST_API_URL`, `KV_REST_API_TOKEN`) automatically.
+3. **Add a database.** In your Vercel project open **Storage** > **Marketplace** and add a **Redis** store (either the Redis or the
+   Upstash option works), then connect it to the project. Vercel adds the connection variable automatically
+   (`REDIS_URL`, or `KV_REST_API_URL` + `KV_REST_API_TOKEN` for Upstash). The app detects whichever one is present.
 4. **Add a secret.** Project > Settings > Environment Variables > add `SESSION_SECRET` with a long random value
    (run `openssl rand -hex 32`). Apply to Production, Preview and Development.
 5. **Redeploy.** Deployments > the latest one > Redeploy. Open the site and create your account.
@@ -55,12 +56,21 @@ Registration is blocked when an account was already created from the same IP add
   somewhere else behind your own proxy, make sure the proxy overwrites those headers or the check can be spoofed.
 - To turn the rule off, set the environment variable `DISABLE_IP_LIMIT=1` and redeploy.
 
+## Mac app (syncs with the web version)
+
+The `desktop/` folder is a Mac app (Apple Silicon) that connects to your deployed site. Sign in there with the same
+account and your journal is shared between the app and the web. See `desktop/README.md`. Quick version:
+
+    cd desktop
+    ./build.sh https://your-journal.vercel.app
+
 ## Project layout
 
     public/        index.html, styles.css, app.js   (the whole UI)
     api/           register, login, logout, me, data, account   (Vercel serverless functions)
     lib/core.js    Redis client, hashing, sessions, IP handling, rate limiting
     vercel.json    security headers (CSP)
+    desktop/       Mac app that connects to the deployed site (not deployed to Vercel)
 
 ## Notes on trade math
 
