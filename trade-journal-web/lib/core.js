@@ -177,4 +177,6 @@ function route(methods, fn) {
   };
 }
 
-module.exports = { HttpError, redis, hashPassword, verifyPassword, DUMMY, ipHash, startSession, endSession, requireUser, rateLimit, readBody, route };
+const isAdmin = key => key === 'admin';
+
+module.exports = { isAdmin, HttpError, redis, hashPassword, verifyPassword, DUMMY, ipHash, startSession, endSession, requireUser, rateLimit, readBody, route };

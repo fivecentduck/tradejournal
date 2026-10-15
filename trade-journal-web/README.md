@@ -4,7 +4,7 @@ A simple futures day trading journal with accounts. Static frontend + Vercel ser
 
 Features: open positions, close positions, full trade entry, trade log, P&L calendar, P&L chart, starting balance,
 contract list (ES, MES, NQ, MNQ, NNQ, YM, MYM, RTY, M2K, CL, MCL, GC, MGC, SI, SIL + custom), per-contract fees,
-3 UI styles, 4 themes + 2 custom slots, animations, optional loading screen, JSON backup/restore.
+6 UI styles (Minimalist, Plaintext, Aurora, Terminal, Brutalist, Editorial), 4 themes + 2 custom slots, animations, optional loading screen, JSON backup/restore.
 
 ## Deploy to Vercel
 
@@ -56,6 +56,49 @@ Registration is blocked when an account was already created from the same IP add
   somewhere else behind your own proxy, make sure the proxy overwrites those headers or the check can be spoofed.
 - To turn the rule off, set the environment variable `DISABLE_IP_LIMIT=1` and redeploy.
 
+## Take profit / stop loss
+
+Open positions can carry a take profit and stop loss (set them when adding the position, or type them straight into the
+position card on the Overview). Each position then shows **TP hit** and **SL hit** buttons: one tap closes the trade at that
+price with the current time, and a toast lets you **Undo**. Positions show what you'd make or lose at each level
+(after estimated fees) and the reward-to-risk ratio.
+
+The trade log has two tick columns: **Ticks / contract** (how far price moved for one contract, so you can judge the trade
+itself) and **Total ticks** (that times your contract count).
+
+## Mobile
+
+The app picks its layout automatically: portrait screens (aspect ratio taller than wide), narrow windows, and phones turned
+sideways get the mobile layout (bottom tab bar with a + button, trades as cards, bottom-sheet forms). Landscape/desktop
+windows get the desktop layout, and it switches live as you resize or rotate.
+
+## Admin account
+
+The account named `admin` gets an extra **Admin** tab: a list of every account (joined date, trades, win rate, P&L, balance) and
+a read-only view of any account's trade history. Everyone else never sees the tab, and the server refuses admin requests from
+any other account no matter what the browser does.
+
+- Because anyone could otherwise register `admin` first, the name is **reserved**: set `ADMIN_SETUP_CODE` in Vercel
+  (Settings > Environment Variables, 8+ characters), redeploy, then register `admin` and type that code in the extra field that appears.
+  The admin account is exempt from the one-per-IP rule so it can't be locked out by a regular account on the same network.
+- Password hashes and IP data are never returned by the admin API.
+- Admin can read everyone's journals, so tell your users. The sign-up screen says so.
+
+## TradingView paper trading
+
+TradingView has no public API for paper-trading accounts, so there is no live connection. Instead:
+
+1. In TradingView: open a chart > Paper Trading panel > Order History tab > tick all columns (Side, Type, Qty, Fill Price,
+   Status, Commission, Closing Time, Order ID) > TradingView menu > **Export data** > Order History > Export.
+2. In Trade Journal: Trade log (or Settings > Data) > **Import TradingView CSV**.
+3. Check the symbol mapping (NQ1!, MESZ2026 and so on are matched to your contracts), then Import.
+
+Filled orders are paired first-in-first-out into closed trades; whatever is still open becomes an open position. Re-importing
+is safe: trades already imported are skipped and old open-position snapshots are replaced.
+
+Open positions have a **Current price** box (type the price, see unrealized P&L) and a **Chart** link that opens the
+contract on TradingView. There is no free official real-time futures feed, so prices are entered by hand.
+
 ## Mac app (syncs with the web version)
 
 The `desktop/` folder is a Mac app (Apple Silicon) that connects to your deployed site. Sign in there with the same
@@ -67,7 +110,7 @@ account and your journal is shared between the app and the web. See `desktop/REA
 ## Project layout
 
     public/        index.html, styles.css, app.js   (the whole UI)
-    api/           register, login, logout, me, data, account   (Vercel serverless functions)
+    api/           register, login, logout, me, data, account, admin   (Vercel serverless functions)
     lib/core.js    Redis client, hashing, sessions, IP handling, rate limiting
     vercel.json    security headers (CSP)
     desktop/       Mac app that connects to the deployed site (not deployed to Vercel)

@@ -1,5 +1,5 @@
 'use strict';
-const { HttpError, redis, verifyPassword, DUMMY, ipHash, startSession, rateLimit, readBody, route } = require('../lib/core');
+const { isAdmin, HttpError, redis, verifyPassword, DUMMY, ipHash, startSession, rateLimit, readBody, route } = require('../lib/core');
 
 module.exports = route(['POST'], async (req, res) => {
   const { username, password } = await readBody(req);
@@ -16,5 +16,5 @@ module.exports = route(['POST'], async (req, res) => {
   if (!user || !ok) throw new HttpError(401, 'Wrong username or password.');
 
   startSession(req, res, key);
-  return { username: user.username };
+  return { username: user.username, admin: isAdmin(key) };
 });

@@ -79,7 +79,10 @@ const COLOR_KEYS = [['bg', 'Background'], ['surface', 'Surface'], ['text', 'Text
 const STYLES = {
   minimal: { name: 'Minimalist', desc: 'Clean, quiet, lots of space.' },
   plain:   { name: 'Plaintext',  desc: 'Early-internet: serif type, bordered tables, beveled buttons.' },
-  aurora:  { name: 'Aurora',     desc: 'Frosted glass over soft glowing color.' }
+  aurora:  { name: 'Aurora',     desc: 'Frosted glass over soft glowing color.' },
+  terminal: { name: 'Terminal',  desc: 'Monospace, sharp edges, glowing readouts. A trading-desk feel.' },
+  brutal:  { name: 'Brutalist',  desc: 'Thick outlines, hard shadows, loud and chunky.' },
+  editorial: { name: 'Editorial', desc: 'Magazine serif type, hairline rules, no boxes.' }
 };
 
 const TIPS = [
@@ -121,6 +124,7 @@ function defaultState() {
     }
   };
 }
+const numOrNull = v => (v == null || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
 function normalize(s, d = defaultState()) {
   const out = { ...d, ...s };
   out.settings = { ...d.settings, ...(s.settings || {}) };
@@ -139,7 +143,8 @@ function normalize(s, d = defaultState()) {
     id: String(t.id || uid()), symbol: String(t.symbol || ''), side: t.side === 'short' ? 'short' : 'long',
     qty: Number(t.qty) || 1, entryPrice: Number(t.entryPrice), entryTime: String(t.entryTime || ''),
     exitPrice: t.exitPrice == null ? null : Number(t.exitPrice), exitTime: t.exitTime ? String(t.exitTime) : null,
-    fee: Number(t.fee) || 0, tick: Number(t.tick) || 0.01, pv: Number(t.pv) || 1, notes: String(t.notes || '')
+    fee: Number(t.fee) || 0, tick: Number(t.tick) || 0.01, pv: Number(t.pv) || 1, notes: String(t.notes || ''),
+    src: t.src ? String(t.src) : '', mark: numOrNull(t.mark), tp: numOrNull(t.tp), sl: numOrNull(t.sl)
   }));
   if (!out.contracts.some(c => c.symbol === 'NNQ') && !(s.seeded || []).includes('NNQ')) {
     const i = out.contracts.findIndex(c => c.symbol === 'MNQ');
@@ -193,8 +198,20 @@ const ui = {
   chartMode: 'equity', chartRange: 'all'
 };
 
+/* ---------- Mobile layout: switches on aspect ratio / small screens ---------- */
+const mq = window.matchMedia
+  ? window.matchMedia('(max-aspect-ratio: 1/1), (max-width: 700px), (max-height: 480px) and (pointer: coarse)')
+  : { matches: false, addEventListener() {} };
+const isMobile = () => document.documentElement.dataset.layout === 'mobile';
+function applyLayout() { document.documentElement.dataset.layout = mq.matches ? 'mobile' : 'desktop'; }
+applyLayout();
+mq.addEventListener('change', () => { applyLayout(); if (user && $('#view')) render({ enter: false }); });
+const moneyC = n => { const a = Math.abs(n), t = a >= 1000 ? (a / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : String(Math.round(a)); return (n < 0 ? '-' : n > 0 ? '+' : '') + '$' + t; };
+const tk = n => (n >= 0 ? '+' : '') + round(n, 1);
 const getContract = sym => state.contracts.find(c => c.symbol === sym);
 const pointValue = c => round(c.tickValue / c.tickSize);
+const TV_EXCHANGE = { ES: 'CME_MINI', MES: 'CME_MINI', NQ: 'CME_MINI', MNQ: 'CME_MINI', RTY: 'CME_MINI', M2K: 'CME_MINI', YM: 'CBOT_MINI', MYM: 'CBOT_MINI', CL: 'NYMEX', MCL: 'NYMEX', GC: 'COMEX', MGC: 'COMEX', SI: 'COMEX', SIL: 'COMEX' };
+const tvUrl = sym => 'https://www.tradingview.com/chart/?symbol=' + encodeURIComponent((TV_EXCHANGE[sym] ? TV_EXCHANGE[sym] + ':' : '') + sym + '1!');
 
 /* =====================================================
    Calculations
@@ -205,7 +222,8 @@ function calc(t) {
   const pts = (t.exitPrice - t.entryPrice) * dir;
   const gross = pts * t.pv * t.qty;
   const fees = t.fee * t.qty * 2;
-  return { pts, gross, fees, net: gross - fees, ticks: pts / t.tick };
+  const ticks = pts / t.tick; // ticks per contract
+  return { pts, gross, fees, net: gross - fees, ticks, ticksTotal: ticks * t.qty };
 }
 const isOpen = t => t.exitPrice == null;
 const closedTrades = () => state.trades.filter(t => !isOpen(t));
@@ -276,14 +294,23 @@ const ICON = {
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   chart: '<path d="M3 17l6-6 4 4 8-9"/>',
   contracts: '<path d="M12 3l9 5-9 5-9-5zM3 13l9 5 9-5"/>',
+  admin: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  more: '<circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>'
 };
 const VIEWS = [
   ['overview', 'Overview'], ['trades', 'Trade log'], ['calendar', 'P&L calendar'],
   ['chart', 'P&L chart'], ['contracts', 'Contracts'], ['settings', 'Settings']
 ];
+const TABS = [['overview', 'Home'], ['trades', 'Trades'], ['calendar', 'Calendar'], ['chart', 'Chart']];
+const svgI = id => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[id]}</svg>`;
 function renderNav() {
-  $('#nav').innerHTML = VIEWS.map(([id, label]) =>
+  const viewList = user && user.admin ? [...VIEWS, ['admin', 'Admin']] : VIEWS;
+  const tab = ([id, l]) => `<button data-nav="${id}" class="${ui.view === id ? 'active' : ''}">${svgI(id)}<span>${l}</span></button>`;
+  $('#tabbar').innerHTML = TABS.slice(0, 2).map(tab).join('')
+    + `<button class="tab-add" data-act="new" aria-label="New trade"><i>+</i></button>` + TABS.slice(2).map(tab).join('')
+    + `<button data-act="more" class="${['contracts', 'settings', 'admin'].includes(ui.view) ? 'active' : ''}">${svgI('more')}<span>More</span></button>`;
+  $('#nav').innerHTML = viewList.map(([id, label]) =>
     `<button data-nav="${id}" class="${ui.view === id ? 'active' : ''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${ICON[id]}</svg>${label}</button>`
   ).join('');
   const s = computeStats(state.trades);
@@ -313,19 +340,38 @@ function viewOverview() {
   const open = openTrades().sort((a, b) => a.entryTime < b.entryTime ? 1 : -1);
   const recent = closedTrades().sort((a, b) => a.exitTime < b.exitTime ? 1 : -1).slice(0, 6);
 
-  const posRows = open.map((t, i) => `
+  const posRows = open.map((t, i) => {
+    const pot = px => (px == null ? null : calc({ ...t, exitPrice: px }).net);
+    const tpNet = pot(t.tp), slNet = pot(t.sl), unreal = pot(t.mark);
+    const rr = tpNet != null && slNet != null && tpNet > 0 && slNet < 0 ? tpNet / -slNet : null;
+    const notes = [
+      unreal != null ? `Unrealized <b class="${cls(unreal)} num">${money(unreal, true)}</b>` : `1 point = ${money(t.pv * t.qty)}`,
+      tpNet != null ? `TP <span class="pos num">${money(tpNet, true)}</span>` : '',
+      slNet != null ? `SL <span class="neg num">${money(slNet, true)}</span>` : '',
+      rr != null ? `R:R 1:${rr.toFixed(1)}` : ''
+    ].filter(Boolean).join(' · ');
+    return `
     <div class="pos-row" data-row="${t.id}" style="--i:${i}">
-      <div><div class="big sym">${esc(t.symbol)} <span class="pill ${t.side}">${t.side === 'long' ? 'Long' : 'Short'}</span></div>
+      <div class="pr-id"><div class="big sym">${esc(t.symbol)} <span class="pill ${t.side}">${t.side === 'long' ? 'Long' : 'Short'}</span></div>
         <div class="small">${t.qty} contract${t.qty > 1 ? 's' : ''}</div></div>
-      <div><div class="num">Entry <b>${priceStr(t.entryPrice)}</b></div>
+      <div class="pr-entry"><div class="num">Entry <b>${priceStr(t.entryPrice)}</b></div>
         <div class="small">${fmtDateTime(t.entryTime)} · held <span data-since="${t.entryTime}">${fmtDur(Date.now() - parseLocal(t.entryTime))}</span></div></div>
-      <div class="small">1 point = ${money(t.pv * t.qty)}<br>fees est. ${money(t.fee * t.qty * 2)}</div>
+      <div class="pr-levels">
+        <label class="lvl"><span>Now</span><input type="number" step="any" class="mark" data-mark="${t.id}" value="${t.mark == null ? '' : priceStr(t.mark)}" placeholder="price"></label>
+        <label class="lvl"><span>Take profit</span><input type="number" step="any" class="mark" data-tp="${t.id}" value="${t.tp == null ? '' : priceStr(t.tp)}" placeholder="TP"></label>
+        <label class="lvl"><span>Stop loss</span><input type="number" step="any" class="mark" data-sl="${t.id}" value="${t.sl == null ? '' : priceStr(t.sl)}" placeholder="SL"></label>
+        <div class="small pr-note">${notes} <span class="mut">(after est. fees)</span></div>
+      </div>
       <div class="actions">
+        ${t.tp != null ? `<button class="btn sm tpbtn" data-act="hit-tp" data-id="${t.id}">TP hit · ${priceStr(t.tp)}</button>` : ''}
+        ${t.sl != null ? `<button class="btn sm slbtn" data-act="hit-sl" data-id="${t.id}">SL hit · ${priceStr(t.sl)}</button>` : ''}
+        <a class="btn sm" href="${tvUrl(t.symbol)}" target="_blank" rel="noopener">Chart</a>
         <button class="btn primary sm" data-act="close" data-id="${t.id}">Close</button>
         <button class="btn sm" data-act="edit" data-id="${t.id}">Edit</button>
         <button class="btn sm danger" data-act="del" data-id="${t.id}">Delete</button>
       </div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 
   const recentRows = recent.map((t, i) => {
     const c = calc(t);
@@ -370,23 +416,37 @@ function viewTrades() {
       <td class="sym">${esc(t.symbol)}</td><td><span class="pill ${t.side}">${t.side === 'long' ? 'Long' : 'Short'}</span></td>
       <td class="r num">${t.qty}</td><td class="r num">${priceStr(t.entryPrice)}</td><td class="r num">${t.exitPrice == null ? '-' : priceStr(t.exitPrice)}</td>
       <td class="r num">${c ? fmtDur(parseLocal(t.exitTime) - parseLocal(t.entryTime)) : '-'}</td>
-      <td class="r num">${c ? (c.ticks >= 0 ? '+' : '') + round(c.ticks, 1) : '-'}</td>
+      <td class="r num ${c ? cls(c.ticks) : ''}"><b>${c ? tk(c.ticks) : '-'}</b></td>
+      <td class="r num mut">${c ? tk(c.ticksTotal) : '-'}</td>
       <td class="r num mut">${c ? money(c.fees) : '-'}</td>
       <td class="r num ${c ? cls(c.net) : ''}"><b>${c ? money(c.net, true) : '-'}</b></td>
       <td class="r">${isOpen(t) ? `<button class="btn sm primary" data-act="close" data-id="${t.id}">Close</button> ` : ''}<button class="btn sm" data-act="edit" data-id="${t.id}">Edit</button> <button class="btn sm danger" data-act="del" data-id="${t.id}">Delete</button></td>
-    </tr>${t.notes ? `<tr class="notes-row"><td colspan="12" class="mut" style="padding-top:0;white-space:normal">↳ ${esc(t.notes)}</td></tr>` : ''}`;
+    </tr>${t.notes ? `<tr class="notes-row"><td colspan="13" class="mut" style="padding-top:0;white-space:normal">↳ ${esc(t.notes)}</td></tr>` : ''}`;
+  }).join('');
+
+  const cards = list.map((t, i) => {
+    const c = calc(t);
+    return `<div class="tcard" data-row="${t.id}" style="--i:${Math.min(i, 16)}">
+      <div class="tc-top"><div><span class="sym">${esc(t.symbol)}</span> <span class="pill ${t.side}">${t.side === 'long' ? 'Long' : 'Short'}</span> <span class="mut">x${t.qty}</span></div>
+        <div class="num ${c ? cls(c.net) : ''}"><b>${c ? money(c.net, true) : '<span class="pill open">Open</span>'}</b></div></div>
+      <div class="num tc-mid">${priceStr(t.entryPrice)} → ${t.exitPrice == null ? '...' : priceStr(t.exitPrice)}</div>
+      <div class="tc-sub mut">${fmtDateTime(t.entryTime)}${c ? ` · held ${fmtDur(parseLocal(t.exitTime) - parseLocal(t.entryTime))}` : ''}</div>
+      ${c ? `<div class="tc-sub"><b class="num ${cls(c.ticks)}">${tk(c.ticks)} ticks/contract</b> <span class="mut num">· ${tk(c.ticksTotal)} total · fees ${money(c.fees)}</span></div>` : ''}
+      ${t.notes ? `<div class="tc-sub mut">${esc(t.notes)}</div>` : ''}
+      <div class="actions">${isOpen(t) ? `<button class="btn sm primary" data-act="close" data-id="${t.id}">Close</button>` : ''}<button class="btn sm" data-act="edit" data-id="${t.id}">Edit</button><button class="btn sm danger" data-act="del" data-id="${t.id}">Delete</button></div>
+    </div>`;
   }).join('');
 
   return `
   <div class="head"><div><h1>Trade log</h1><div class="sub">${list.length} trade${list.length === 1 ? '' : 's'} · net <span class="${cls(tot.net)}">${money(tot.net, true)}</span></div></div>
-    <div class="actions"><button class="btn" data-act="new-open">Add open position</button><button class="btn primary" data-act="new-closed">Add completed trade</button></div></div>
+    <div class="actions"><button class="btn" data-act="import-tv">Import TradingView CSV</button><button class="btn" data-act="new-open">Add open position</button><button class="btn primary" data-act="new-closed">Add completed trade</button></div></div>
   <div class="card">
     <div class="actions" style="margin-bottom:12px">
       <input type="search" id="fq" placeholder="Search contract or notes" value="${esc(f.q)}" style="max-width:240px">
       <select id="fside" style="width:auto"><option value="all">All sides</option><option value="long" ${f.side === 'long' ? 'selected' : ''}>Long</option><option value="short" ${f.side === 'short' ? 'selected' : ''}>Short</option></select>
       <select id="fres" style="width:auto"><option value="all">All results</option><option value="open" ${f.result === 'open' ? 'selected' : ''}>Open</option><option value="win" ${f.result === 'win' ? 'selected' : ''}>Winners</option><option value="loss" ${f.result === 'loss' ? 'selected' : ''}>Losers</option></select>
     </div>
-    ${list.length ? `<div class="tablewrap"><table><thead><tr><th>Entered</th><th>Exited</th><th>Contract</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Held</th><th class="r">Ticks</th><th class="r">Fees</th><th class="r">Net P&L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` :
+    ${list.length ? (isMobile() ? `<div class="tcards">${cards}</div>` : `<div class="tablewrap"><table><thead><tr><th>Entered</th><th>Exited</th><th>Contract</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Held</th><th class="r" title="Price move in ticks for ONE contract">Ticks / contract</th><th class="r" title="Ticks x contracts">Total ticks</th><th class="r">Fees</th><th class="r">Net P&L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`) :
       `<div class="empty">${state.trades.length ? 'No trades match these filters.' : 'No trades yet.<br><button class="btn primary" data-act="new-closed">Add your first trade</button>'}</div>`}
   </div>`;
 }
@@ -414,7 +474,7 @@ function viewCalendar() {
       const tint = info ? Math.round(14 + 40 * Math.min(1, Math.abs(info.net) / maxAbs)) : 0;
       cells += `<div class="cell ${inMonth ? '' : 'other'} ${info ? 'has ' + (info.net >= 0 ? 'up' : 'dn') : ''} ${k === tk ? 'today' : ''} ${ui.selDay === k ? 'sel' : ''}" ${info ? `data-day="${k}"` : ''} style="--i:${idx++};--tint:${tint}">
         <span class="d">${date.getDate()}</span>
-        ${info ? `<span class="p ${cls(info.net)}">${money(info.net, true)}</span><span class="n">${info.n} trade${info.n > 1 ? 's' : ''}</span>` : '<span></span><span></span>'}</div>`;
+        ${info ? `<span class="p ${cls(info.net)}">${isMobile() ? moneyC(info.net) : money(info.net, true)}</span><span class="n">${info.n} trade${info.n > 1 ? 's' : ''}</span>` : '<span></span><span></span>'}</div>`;
     }
     cells += `<div class="cell week" style="--i:${idx++}"><span class="d">Week ${w + 1}</span>${wkN ? `<span class="p ${cls(wkNet)}">${money(wkNet, true)}</span><span class="n">${wkN} trade${wkN > 1 ? 's' : ''}</span>` : '<span></span><span></span>'}</div>`;
   }
@@ -430,7 +490,7 @@ function viewCalendar() {
 
   return `
   <div class="head"><div><h1>P&L calendar</h1><div class="sub">Daily results by exit date</div></div>
-    <div class="actions"><button class="btn" data-act="cal-prev" aria-label="Previous month">‹</button><div class="cal-title">${first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div><button class="btn" data-act="cal-next" aria-label="Next month">›</button><button class="btn ghost" data-act="cal-today">Today</button></div></div>
+    <div class="actions cal-nav"><button class="btn" data-act="cal-prev" aria-label="Previous month">‹</button><div class="cal-title">${first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</div><button class="btn" data-act="cal-next" aria-label="Next month">›</button><button class="btn ghost" data-act="cal-today">Today</button></div></div>
   <div class="grid stats">
     ${statCard(0, 'Month P&L', monthNet, 'smoney', '', cls(monthNet))}
     ${statCard(1, 'Trading days', monthDays, 'int', `${monthWins} green · ${monthDays - monthWins} red`)}
@@ -476,7 +536,9 @@ function drawChart() {
   const host = $('#chartHost');
   if (!host) return;
   const { list, base } = chartSeries();
-  const W = Math.max(480, host.clientWidth), H = 380, M = { l: 74, r: 18, t: 14, b: 34 };
+  const mob = isMobile();
+  const W = Math.max(mob ? 300 : 480, host.clientWidth), H = mob ? 300 : 380, M = { l: mob ? 58 : 74, r: mob ? 10 : 18, t: 14, b: 34 };
+  const axis = v => { if (!mob) return money(v).replace(/\.00$/, ''); const a = Math.abs(v); return (v < 0 ? '-' : '') + '$' + (a >= 1000 ? (a / 1000).toFixed(a >= 100000 ? 0 : 1).replace(/\.0$/, '') + 'k' : Math.round(a)); };
   const iw = W - M.l - M.r, ih = H - M.t - M.b;
   const mode = ui.chartMode;
   const need = mode === 'equity' ? 1 : 1;
@@ -501,7 +563,7 @@ function drawChart() {
 
   let g = '';
   for (let v = t0; v <= t1 + step / 2; v += step) {
-    g += `<line class="grid-line" x1="${M.l}" x2="${W - M.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${M.l - 10}" y="${Y(v) + 4}" text-anchor="end">${money(v).replace(/\.00$/, '')}</text>`;
+    g += `<line class="grid-line" x1="${M.l}" x2="${W - M.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${M.l - 10}" y="${Y(v) + 4}" text-anchor="end">${axis(v)}</text>`;
   }
   const every = Math.max(1, Math.ceil(n / Math.floor(iw / 80)));
   pts.forEach((p, i) => {
@@ -616,7 +678,7 @@ function viewSettings() {
     <div class="setrow"><div>Animations<small>Turn off for instant transitions.</small></div>
       <label class="switch"><input type="checkbox" data-set="animations" ${st.animations ? 'checked' : ''}><i></i></label></div></div>
   <div class="card"><h2>Data</h2>
-    <div class="actions"><button class="btn" data-act="export">Export backup (JSON)</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="reset-all">Erase all data</button></div>
+    <div class="actions"><button class="btn" data-act="import-tv">Import TradingView CSV</button><button class="btn" data-act="export">Export backup (JSON)</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="reset-all">Erase all data</button></div>
     <input type="file" id="importFile" accept="application/json,.json" hidden>
     <p class="mut" style="margin-top:10px">Your journal is stored in your account. Backups are a good idea before erasing or importing.</p></div>`;
 }
@@ -624,7 +686,7 @@ function viewSettings() {
 /* =====================================================
    Rendering
    ===================================================== */
-const RENDER = { overview: viewOverview, trades: viewTrades, calendar: viewCalendar, chart: viewChart, contracts: viewContracts, settings: viewSettings };
+const RENDER = { admin: viewAdmin, overview: viewOverview, trades: viewTrades, calendar: viewCalendar, chart: viewChart, contracts: viewContracts, settings: viewSettings };
 
 function render(opts = {}) {
   const v = $('#view');
@@ -638,7 +700,9 @@ function render(opts = {}) {
 function go(view) {
   if (view === ui.view) return;
   ui.view = view; state.settings.lastView = view; save();
+  admin.detailName = null;
   render({ scrollTop: true });
+  if (view === 'admin') loadAdminUsers();
 }
 
 function animateNumbers(root) {
@@ -680,10 +744,16 @@ function confirmDialog(title, text, okLabel = 'Delete') {
     modalResolve = res;
   });
 }
-function toast(msg) {
-  const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg;
+function toast(msg, opts = {}) {
+  const el = document.createElement('div'); el.className = 'toast';
+  const span = document.createElement('span'); span.textContent = msg; el.appendChild(span);
+  const remove = () => { el.classList.add('out'); setTimeout(() => el.remove(), 320); };
+  if (opts.action) {
+    const b = document.createElement('button'); b.className = 'toast-btn'; b.type = 'button'; b.textContent = opts.action;
+    b.onclick = () => { opts.fn(); remove(); }; el.appendChild(b);
+  }
   $('#toasts').appendChild(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 320); }, 2400);
+  setTimeout(remove, opts.action ? 7000 : 2400);
 }
 
 /* =====================================================
@@ -718,6 +788,10 @@ function openTradeModal(id, mode) {
       <label class="f"><span>Fee per contract, per side ($)</span><input type="number" name="fee" min="0" step="0.01" value="${v.fee}"></label>
       <label class="f"><span>Entry price</span><input type="number" name="entryPrice" step="any" value="${v.entryPrice}"></label>
       <label class="f"><span>Entry time</span><input type="datetime-local" name="entryTime" value="${v.entryTime}"></label>
+      <div class="collapse ${closed ? '' : 'show'}" id="levelBox" ${closed ? 'inert' : ''}><div><div class="form-grid">
+        <label class="f"><span>Take profit price (optional)</span><input type="number" name="tp" step="any" value="${t && t.tp != null ? priceStr(t.tp) : ''}"></label>
+        <label class="f"><span>Stop loss price (optional)</span><input type="number" name="sl" step="any" value="${t && t.sl != null ? priceStr(t.sl) : ''}"></label>
+      </div></div></div>
       <div class="collapse ${closed ? 'show' : ''}" id="exitBox" ${closed ? '' : 'inert'}><div><div class="form-grid">
         <label class="f"><span>Exit price</span><input type="number" name="exitPrice" step="any" value="${v.exitPrice}"></label>
         <label class="f"><span>Exit time</span><input type="datetime-local" name="exitTime" value="${v.exitTime}"></label>
@@ -742,6 +816,7 @@ function readTradeForm() {
     qty: parseInt(fd.get('qty'), 10), fee: parseFloat(fd.get('fee')),
     entryPrice: parseFloat(fd.get('entryPrice')), entryTime: fd.get('entryTime'),
     exitPrice: closed ? parseFloat(fd.get('exitPrice')) : null, exitTime: closed ? fd.get('exitTime') : null,
+    tp: closed ? null : numOrNull(parseFloat(fd.get('tp'))), sl: closed ? null : numOrNull(parseFloat(fd.get('sl'))),
     notes: (fd.get('notes') || '').trim()
   };
   return out;
@@ -757,12 +832,18 @@ function updateTradePreview() {
   if (!c) return;
   const pv = pointValue(c);
   if (!d.closed) {
-    box.innerHTML = `<span class="mut">Saved as an open position. 1 point = ${money(pv * (d.qty || 0))}, tick = ${money(c.tickValue * (d.qty || 0))}. Close it later from the Overview.</span>`;
+    const bits = [];
+    if (Number.isFinite(d.entryPrice) && d.qty >= 1 && Number.isFinite(d.fee)) {
+      const at = px => calc({ side: d.side, entryPrice: d.entryPrice, exitPrice: px, pv, qty: d.qty, fee: d.fee, tick: c.tickSize }).net;
+      if (d.tp != null) bits.push(`TP <b class="pos num">${money(at(d.tp), true)}</b>`);
+      if (d.sl != null) bits.push(`SL <b class="neg num">${money(at(d.sl), true)}</b>`);
+    }
+    box.innerHTML = `<span class="mut">Saved as an open position. 1 point = ${money(pv * (d.qty || 0))}, tick = ${money(c.tickValue * (d.qty || 0))}.</span>${bits.length ? '<br>If hit: ' + bits.join(' · ') : ''}`;
     return;
   }
   if (![d.entryPrice, d.exitPrice, d.qty, d.fee].every(Number.isFinite)) { box.innerHTML = '<span class="mut">Enter prices to see the P&L.</span>'; return; }
   const r = calc({ side: d.side, entryPrice: d.entryPrice, exitPrice: d.exitPrice, pv, qty: d.qty, fee: d.fee, tick: c.tickSize });
-  box.innerHTML = `Net <b class="${cls(r.net)} num">${money(r.net, true)}</b> <span class="mut num">· gross ${money(r.gross, true)} · fees ${money(r.fees)} · ${r.ticks >= 0 ? '+' : ''}${round(r.ticks, 1)} ticks</span>`;
+  box.innerHTML = `Net <b class="${cls(r.net)} num">${money(r.net, true)}</b> <span class="mut num">· gross ${money(r.gross, true)} · fees ${money(r.fees)} · ${tk(r.ticks)} ticks per contract (${tk(r.ticksTotal)} total)</span>`;
 }
 
 function submitTrade() {
@@ -778,6 +859,10 @@ function submitTrade() {
     if (!Number.isFinite(d.exitPrice)) return fail('Enter an exit price, or switch to Open position.');
     if (!d.exitTime) return fail('Enter an exit time.');
     if (d.exitTime < d.entryTime) return fail('Exit time is before entry time.');
+  } else {
+    const long = d.side === 'long';
+    if (d.tp != null && (long ? d.tp <= d.entryPrice : d.tp >= d.entryPrice)) return fail(`Take profit should be ${long ? 'above' : 'below'} your entry for a ${d.side}.`);
+    if (d.sl != null && (long ? d.sl >= d.entryPrice : d.sl <= d.entryPrice)) return fail(`Stop loss should be ${long ? 'below' : 'above'} your entry for a ${d.side}.`);
   }
   const id = $('#tf').dataset.id;
   const existing = id ? state.trades.find(x => x.id === id) : null;
@@ -785,7 +870,8 @@ function submitTrade() {
   const trade = {
     id: existing ? existing.id : uid(), symbol: d.symbol, side: d.side, qty: d.qty,
     entryPrice: d.entryPrice, entryTime: d.entryTime, exitPrice: d.exitPrice, exitTime: d.exitTime,
-    fee: d.fee, tick: sameSymbol ? existing.tick : c.tickSize, pv: sameSymbol ? existing.pv : pointValue(c), notes: d.notes
+    fee: d.fee, tick: sameSymbol ? existing.tick : c.tickSize, pv: sameSymbol ? existing.pv : pointValue(c), notes: d.notes,
+    tp: d.tp, sl: d.sl
   };
   if (existing) Object.assign(existing, trade); else state.trades.push(trade);
   state.settings.lastSymbol = d.symbol;
@@ -800,20 +886,21 @@ function openCloseModal(id) {
     <h2>Close ${esc(t.symbol)} ${t.side}</h2>
     <p class="mut" style="margin-bottom:12px">${t.qty} contract${t.qty > 1 ? 's' : ''} from ${priceStr(t.entryPrice)}, entered ${fmtDateTime(t.entryTime)}</p>
     <div class="form-grid">
-      <label class="f"><span>Exit price</span><input type="number" name="exitPrice" step="any"></label>
+      <label class="f"><span>Exit price</span><input type="number" name="exitPrice" step="any" value="${t.mark == null ? '' : priceStr(t.mark)}"></label>
       <label class="f"><span>Exit time</span><input type="datetime-local" name="exitTime" value="${nowLocal()}"></label>
       <div class="full preview" id="cpv"><span class="mut">Enter an exit price to see the P&L.</span></div>
       <div class="full err" id="cerr"></div>
     </div>
     <div class="modal-actions"><button type="button" class="btn" data-act="modal-close">Cancel</button><button type="submit" class="btn primary">Close position</button></div>
   </form>`);
+  closePreview();
 }
 function closePreview() {
   const f = $('#cf'); if (!f) return;
   const t = state.trades.find(x => x.id === f.dataset.id), ep = parseFloat(new FormData(f).get('exitPrice'));
   if (!Number.isFinite(ep)) { $('#cpv').innerHTML = '<span class="mut">Enter an exit price to see the P&L.</span>'; return; }
   const r = calc({ ...t, exitPrice: ep });
-  $('#cpv').innerHTML = `Net <b class="${cls(r.net)} num">${money(r.net, true)}</b> <span class="mut num">· gross ${money(r.gross, true)} · fees ${money(r.fees)} · ${r.ticks >= 0 ? '+' : ''}${round(r.ticks, 1)} ticks</span>`;
+  $('#cpv').innerHTML = `Net <b class="${cls(r.net)} num">${money(r.net, true)}</b> <span class="mut num">· gross ${money(r.gross, true)} · fees ${money(r.fees)} · ${tk(r.ticks)} ticks per contract (${tk(r.ticksTotal)} total)</span>`;
 }
 function submitClose() {
   const f = $('#cf'), fd = new FormData(f), t = state.trades.find(x => x.id === f.dataset.id);
@@ -833,6 +920,18 @@ function openBalanceModal() {
     <div class="modal-actions"><button type="button" class="btn" data-act="modal-close">Cancel</button><button type="submit" class="btn primary">Save</button></div></form>`);
 }
 
+function quickClose(id, which) {
+  const t = state.trades.find(x => x.id === id); if (!t || !isOpen(t)) return;
+  const px = which === 'tp' ? t.tp : t.sl; if (px == null) return;
+  const now = nowLocal();
+  t.exitPrice = px; t.exitTime = now < t.entryTime ? t.entryTime : now;
+  save(); render({ enter: false });
+  const r = calc(t);
+  toast(`${which === 'tp' ? 'Take profit' : 'Stop loss'} hit: ${t.symbol} ${money(r.net, true)}`, {
+    action: 'Undo', fn: () => { t.exitPrice = null; t.exitTime = null; save(); render({ enter: false }); }
+  });
+}
+
 async function deleteTrade(id) {
   const t = state.trades.find(x => x.id === id); if (!t) return;
   const ok = await confirmDialog('Delete this trade?', `${t.symbol} ${t.side} · ${t.qty} contract${t.qty > 1 ? 's' : ''}. This can't be undone.`);
@@ -848,7 +947,7 @@ async function deleteTrade(id) {
    ===================================================== */
 document.addEventListener('click', async e => {
   const nav = e.target.closest('[data-nav]');
-  if (nav) { go(nav.dataset.nav); return; }
+  if (nav) { if (modalOpen) closeModal(); go(nav.dataset.nav); return; }
 
   const th = e.target.closest('[data-theme]');
   if (th) { state.settings.theme = th.dataset.theme; save(); applyTheme(true); if (ui.view === 'settings') render({ enter: false }); return; }
@@ -865,6 +964,12 @@ document.addEventListener('click', async e => {
     case 'new-open': openTradeModal(null, 'open'); break;
     case 'edit': openTradeModal(id); break;
     case 'close': openCloseModal(id); break;
+    case 'hit-tp': quickClose(id, 'tp'); break;
+    case 'hit-sl': quickClose(id, 'sl'); break;
+    case 'more': openMore(); break;
+    case 'admin-user': loadAdminUser(a.dataset.user); break;
+    case 'admin-back': admin.detailName = null; admin.detail = null; render({ enter: false }); loadAdminUsers(); break;
+    case 'admin-refresh': if (admin.detailName) loadAdminUser(admin.detailName); else loadAdminUsers(); break;
     case 'del': deleteTrade(id); break;
     case 'balance': openBalanceModal(); break;
     case 'modal-close': closeModal(); break;
@@ -888,6 +993,7 @@ document.addEventListener('click', async e => {
       break;
     case 'logout': logout(); break;
     case 'delete-account': openDeleteModal(); break;
+    case 'import-tv': pickTvFile(); break;
     case 'export': exportData(); break;
     case 'import': $('#importFile').click(); break;
     case 'reset-all':
@@ -900,7 +1006,8 @@ document.addEventListener('click', async e => {
 
 document.addEventListener('submit', e => {
   e.preventDefault();
-  if (e.target.id === 'af') submitAuth();
+  if (e.target.id === 'tvf') applyTvImport();
+  else if (e.target.id === 'af') submitAuth();
   else if (e.target.id === 'df') submitDelete();
   else if (e.target.id === 'tf') submitTrade();
   else if (e.target.id === 'cf') submitClose();
@@ -914,11 +1021,14 @@ document.addEventListener('submit', e => {
 document.addEventListener('input', e => {
   const t = e.target;
   if (t.name === 'authmode') { setAuthMode(t.value); return; }
+  if (t.name === 'username' && t.closest('#af')) { syncAdminField(); return; }
   if (t.closest('#tf')) {
     if (t.name === 'fee') $('#tf').dataset.feeTouched = '1';
     if (t.name === 'mode') {
-      const closed = t.value === 'closed', box = $('#exitBox');
-      box.classList.toggle('show', closed); closed ? box.removeAttribute('inert') : box.setAttribute('inert', '');
+      const closed = t.value === 'closed';
+      [['#exitBox', closed], ['#levelBox', !closed]].forEach(([sel, show]) => {
+        const box = $(sel); box.classList.toggle('show', show); show ? box.removeAttribute('inert') : box.setAttribute('inert', '');
+      });
     }
     if (t.name === 'symbol') {
       const c = formContract(t.value);
@@ -959,6 +1069,19 @@ document.addEventListener('change', e => {
   else if (t.dataset.set) {
     state.settings[t.dataset.set] = t.checked; save(); applyAnim();
     toast(`${t.dataset.set === 'loading' ? 'Loading screen' : 'Animations'} ${t.checked ? 'on' : 'off'}`);
+  } else if (t.dataset.tp !== undefined || t.dataset.sl !== undefined) {
+    const isTp = t.dataset.tp !== undefined, tr = state.trades.find(x => x.id === (isTp ? t.dataset.tp : t.dataset.sl));
+    if (tr) {
+      const n = parseFloat(t.value), v = Number.isFinite(n) ? n : null, long = tr.side === 'long';
+      const bad = v != null && (isTp ? (long ? v <= tr.entryPrice : v >= tr.entryPrice) : (long ? v >= tr.entryPrice : v <= tr.entryPrice));
+      if (bad) { toast(`${isTp ? 'Take profit' : 'Stop loss'} should be ${(isTp === long) ? 'above' : 'below'} your entry for a ${tr.side}.`); render({ enter: false }); return; }
+      tr[isTp ? 'tp' : 'sl'] = v; save(); render({ enter: false });
+    }
+  } else if (t.dataset.mark !== undefined) {
+    const tr = state.trades.find(x => x.id === t.dataset.mark);
+    if (tr) { const n = parseFloat(t.value); tr.mark = Number.isFinite(n) ? n : null; save(); render({ enter: false }); }
+  } else if (t.dataset.tvmap !== undefined) {
+    tvCtx.mapping[t.dataset.tvmap] = t.value || null; tvRefresh();
   } else if (t.dataset.cf) {
     const row = t.closest('tr'), c = getContract(row.dataset.sym); if (!c) return;
     const k = t.dataset.cf;
@@ -1015,6 +1138,222 @@ document.addEventListener('keydown', e => {
 });
 window.addEventListener('resize', () => { clearTimeout(window._rz); window._rz = setTimeout(() => { if (ui.view === 'chart') drawChart(); }, 120); });
 setInterval(() => $$('[data-since]').forEach(el => { el.textContent = fmtDur(Date.now() - parseLocal(el.dataset.since)); }), 30000);
+
+/* =====================================================
+   TradingView paper trading CSV import
+   ===================================================== */
+let tvCtx = { fills: [], mapping: {}, file: '' };
+
+function parseCSV(text) {
+  text = text.replace(/^\uFEFF/, '');
+  const first = text.split(/\r?\n/)[0] || '';
+  const delim = (first.match(/;/g) || []).length > (first.match(/,/g) || []).length ? ';' : ',';
+  const rows = []; let row = [], cell = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; }
+    else if (ch === '"') q = true;
+    else if (ch === delim) { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') { if (ch === '\r' && text[i + 1] === '\n') i++; row.push(cell); cell = ''; if (row.some(c => c.trim() !== '')) rows.push(row); row = []; }
+    else cell += ch;
+  }
+  row.push(cell); if (row.some(c => c.trim() !== '')) rows.push(row);
+  return rows;
+}
+function localStr(d, secs) {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}${secs ? ':' + pad(d.getSeconds()) : ''}`;
+}
+// Returns { t: 'YYYY-MM-DDTHH:mm', k: 'YYYY-MM-DDTHH:mm:ss' } or null. Times without a timezone are used exactly as written.
+function parseTvTime(v) {
+  const s = String(v || '').trim(); if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(s);
+  if (m && !m[7]) return { t: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`, k: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}` };
+  const d = new Date(m ? s.replace(' ', 'T') : s);
+  if (isNaN(d)) return null;
+  return { t: localStr(d), k: localStr(d, true) };
+}
+const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
+
+function parseTvFills(text) {
+  const rows = parseCSV(text);
+  if (rows.length < 2) throw new Error('That file looks empty.');
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const col = (...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+  const iSym = col('symbol', 'instrument'), iSide = col('side'), iQty = col('qty', 'quantity', 'filled qty');
+  const iFill = col('fill price', 'avg fill price', 'average fill price'), iPrice = col('price'), iStatus = col('status');
+  const iFee = col('commission', 'fee', 'fees'), iTime = col('closing time', 'fill time', 'time', 'placing time'), iId = col('order id', 'id');
+  if (iSym < 0 || iSide < 0 || iQty < 0 || (iFill < 0 && iPrice < 0) || iTime < 0)
+    throw new Error("Couldn't find the expected columns (Symbol, Side, Qty, Fill Price, Closing Time). Export the Order History from TradingView with all columns ticked.");
+  const fills = []; let skipped = 0;
+  rows.slice(1).forEach((r, idx) => {
+    if (iStatus >= 0 && !/^filled/i.test((r[iStatus] || '').trim())) { skipped++; return; }
+    const side = /^b/i.test((r[iSide] || '').trim()) ? 'buy' : /^s/i.test((r[iSide] || '').trim()) ? 'sell' : null;
+    const qty = num(r[iQty]); const price = (iFill >= 0 ? num(r[iFill]) : null) ?? (iPrice >= 0 ? num(r[iPrice]) : null);
+    const time = parseTvTime(r[iTime]);
+    const sym = (r[iSym] || '').trim();
+    if (!side || !(qty > 0) || price == null || !time || !sym) { skipped++; return; }
+    const id = iId >= 0 ? (r[iId] || '').trim() : '';
+    fills.push({ sym, side, qty, price, time: time.t, key: time.k, id: id || `${time.k}@${price}`, idn: parseInt(id.replace(/\D/g, ''), 10) || 0, ord: idx, fee: iFee >= 0 ? num(r[iFee]) : null });
+  });
+  if (!fills.length) throw new Error('No filled orders found in that file.');
+  return { fills, skipped };
+}
+
+function guessContract(raw) {
+  let s = String(raw).toUpperCase().trim();
+  if (s.includes(':')) s = s.split(':').pop();
+  s = s.replace(/\d!$/, '');
+  const syms = state.contracts.map(c => c.symbol).sort((a, b) => b.length - a.length);
+  for (const c of syms) {
+    if (s === c) return c;
+    if (s.startsWith(c) && /^[FGHJKMNQUVXZ]\d{1,4}$/.test(s.slice(c.length))) return c;
+  }
+  return null;
+}
+
+// Pair fills first-in-first-out into closed trades; whatever is left over is an open position.
+function buildTvTrades(fills, mapping) {
+  const bySym = {};
+  fills.forEach(f => { const sym = mapping[f.sym]; if (sym) (bySym[sym] = bySym[sym] || []).push(f); });
+  const out = [];
+  Object.entries(bySym).forEach(([sym, list]) => {
+    const c = getContract(sym); if (!c) return;
+    list.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.idn - b.idn || a.ord - b.ord));
+    const base = { symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: 'Imported from TradingView paper trading' };
+    const lots = [];
+    list.forEach(f => {
+      const feePer = f.fee != null ? f.fee / f.qty : c.fee, dir = f.side === 'buy' ? 'long' : 'short';
+      let rem = f.qty;
+      while (rem > 0 && lots.length && lots[0].side !== dir) {
+        const lot = lots[0], q = Math.min(lot.qty, rem);
+        out.push({ ...base, id: uid(), side: lot.side, qty: q, entryPrice: lot.price, entryTime: lot.time, exitPrice: f.price, exitTime: f.time,
+          fee: round((lot.feePer + feePer) / 2, 4), src: `tv:${lot.id}:${f.id}:${q}`, mark: null });
+        lot.qty -= q; rem -= q; if (lot.qty === 0) lots.shift();
+      }
+      if (rem > 0) lots.push({ side: dir, qty: rem, price: f.price, time: f.time, feePer, id: f.id });
+    });
+    lots.forEach(l => out.push({ ...base, id: uid(), side: l.side, qty: l.qty, entryPrice: l.price, entryTime: l.time, exitPrice: null, exitTime: null,
+      fee: round(l.feePer, 4), src: `tv:open:${l.id}:${l.qty}`, mark: null }));
+  });
+  return out;
+}
+
+function pickTvFile() {
+  const inp = document.createElement('input');
+  inp.type = 'file'; inp.accept = '.csv,text/csv,text/plain';
+  inp.onchange = () => {
+    const file = inp.files[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const { fills, skipped } = parseTvFills(String(r.result));
+        const mapping = {}; fills.forEach(f => { if (!(f.sym in mapping)) mapping[f.sym] = guessContract(f.sym); });
+        tvCtx = { fills, mapping, file: file.name, skipped };
+        openTvModal();
+      } catch (e) { toast(e.message || 'Could not read that file'); }
+    };
+    r.readAsText(file);
+  };
+  inp.click();
+}
+function tvPlan() {
+  const trades = buildTvTrades(tvCtx.fills, tvCtx.mapping);
+  const have = new Set(state.trades.map(t => t.src).filter(Boolean));
+  const closed = trades.filter(t => t.exitPrice != null), open = trades.filter(t => t.exitPrice == null);
+  const fresh = closed.filter(t => !have.has(t.src));
+  return { trades, fresh, open, dup: closed.length - fresh.length };
+}
+function openTvModal() {
+  const counts = {}; tvCtx.fills.forEach(f => counts[f.sym] = (counts[f.sym] || 0) + 1);
+  const first = tvCtx.fills.slice().sort((a, b) => (a.key < b.key ? -1 : 1))[0];
+  const rows = Object.keys(counts).map(raw => `<tr><td class="sym">${esc(raw)}</td><td class="r num">${counts[raw]}</td><td><select data-tvmap="${esc(raw)}" style="min-width:150px">
+    <option value="">Skip this symbol</option>${state.contracts.map(c => `<option value="${esc(c.symbol)}" ${tvCtx.mapping[raw] === c.symbol ? 'selected' : ''}>${esc(c.symbol)}</option>`).join('')}</select></td></tr>`).join('');
+  openModal(`<form id="tvf" novalidate><h2>Import from TradingView</h2>
+    <p class="mut" style="margin-bottom:10px">${esc(tvCtx.file)}: ${tvCtx.fills.length} filled orders${tvCtx.skipped ? ` (${tvCtx.skipped} other rows ignored)` : ''}. Fills are paired first-in-first-out into trades; anything left over becomes an open position.</p>
+    <div class="tablewrap"><table><thead><tr><th>Symbol in file</th><th class="r">Fills</th><th>Contract</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="preview" id="tvsum" style="margin-top:12px"></div>
+    <p class="mut" style="font-size:12px;margin-top:8px">First fill: ${esc(fmtDateTime(first.time))}. Times are used exactly as written in the file, so check this matches what you expect. Re-importing the same file won't create duplicates, and open positions from an earlier import are replaced by the new snapshot.</p>
+    <div class="modal-actions"><button type="button" class="btn" data-act="modal-close">Cancel</button><button type="submit" class="btn primary" id="tvgo">Import</button></div></form>`);
+  tvRefresh();
+}
+function tvRefresh() {
+  const el = $('#tvsum'); if (!el) return;
+  const p = tvPlan();
+  el.innerHTML = `<b>${p.fresh.length}</b> new closed trade${p.fresh.length === 1 ? '' : 's'} · <b>${p.open.length}</b> open position${p.open.length === 1 ? '' : 's'}${p.dup ? ` · <span class="mut">${p.dup} already imported, will be skipped</span>` : ''}`;
+  $('#tvgo').disabled = !(p.fresh.length || p.open.length);
+}
+function applyTvImport() {
+  const p = tvPlan();
+  state.trades = state.trades.filter(t => !(t.src && t.src.startsWith('tv:open:') && isOpen(t)));
+  p.fresh.concat(p.open).forEach(t => state.trades.push(t));
+  save(); closeModal(); render({ enter: false });
+  toast(`Imported ${p.fresh.length} trade${p.fresh.length === 1 ? '' : 's'} and ${p.open.length} open position${p.open.length === 1 ? '' : 's'}`);
+}
+
+/* =====================================================
+   Admin (only the account named "admin"; every request is also checked on the server)
+   ===================================================== */
+const admin = { users: null, detail: null, detailName: null, loading: false, error: '' };
+
+async function loadAdminUsers() {
+  admin.loading = true; admin.error = ''; admin.detailName = null;
+  if (ui.view === 'admin') render({ enter: false });
+  const r = await api('admin');
+  admin.loading = false;
+  if (r.ok) admin.users = r.data.users; else admin.error = r.data.error || 'Could not load accounts.';
+  if (ui.view === 'admin' && !admin.detailName) render({ enter: false });
+}
+async function loadAdminUser(name) {
+  admin.detailName = name; admin.detail = null; admin.loading = true; admin.error = '';
+  render({ enter: false });
+  const r = await api('admin?user=' + encodeURIComponent(name));
+  if (admin.detailName !== name) return;
+  admin.loading = false;
+  if (r.ok) admin.detail = { username: r.data.username, created: r.data.created, state: normalize(r.data.state || {}) };
+  else admin.error = r.data.error || 'Could not load that account.';
+  if (ui.view === 'admin') render({ enter: false });
+}
+function viewAdmin() {
+  if (!user || !user.admin) return '<div class="empty">Not available.</div>';
+  const refresh = `<button class="btn" data-act="admin-refresh">Refresh</button>`;
+  if (admin.detailName) {
+    const d = admin.detail;
+    const head = `<div class="head"><div><h1>${esc(admin.detailName)}</h1><div class="sub">${d ? `Joined ${new Date(d.created).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} · read-only` : 'Loading...'}</div></div>
+      <div class="actions"><button class="btn" data-act="admin-back">All accounts</button>${refresh}</div></div>`;
+    if (admin.error) return head + `<div class="card"><div class="err">${esc(admin.error)}</div></div>`;
+    if (!d) return head + '<div class="card"><div class="empty">Loading...</div></div>';
+    const trades = d.state.trades.slice().sort((a, b) => ((b.exitTime || b.entryTime) > (a.exitTime || a.entryTime) ? 1 : -1));
+    const s = computeStats(trades);
+    const rows = trades.map((t, i) => {
+      const c = calc(t);
+      return `<tr style="--i:${Math.min(i, 24)}"><td>${fmtDateTime(t.entryTime)}</td><td>${t.exitTime ? fmtDateTime(t.exitTime) : '<span class="pill open">Open</span>'}</td>
+        <td class="sym">${esc(t.symbol)}</td><td><span class="pill ${t.side}">${t.side}</span></td><td class="r num">${t.qty}</td>
+        <td class="r num">${priceStr(t.entryPrice)}</td><td class="r num">${t.exitPrice == null ? '-' : priceStr(t.exitPrice)}</td>
+        <td class="r num ${c ? cls(c.ticks) : ''}">${c ? tk(c.ticks) : '-'}</td><td class="r num mut">${c ? tk(c.ticksTotal) : '-'}</td>
+        <td class="r num ${c ? cls(c.net) : ''}"><b>${c ? money(c.net, true) : '-'}</b></td></tr>${t.notes ? `<tr><td colspan="10" class="mut" style="padding-top:0;white-space:normal">↳ ${esc(t.notes)}</td></tr>` : ''}`;
+    }).join('');
+    return head + `<div class="grid stats">
+      ${statCard(0, 'Balance', d.state.startingBalance + s.net, 'money', `Started at ${money(d.state.startingBalance)}`)}
+      ${statCard(1, 'Total P&L', s.net, 'smoney', `${s.n} closed trade${s.n === 1 ? '' : 's'}`, cls(s.net))}
+      ${statCard(2, 'Win rate', s.winRate, 'pct', `${s.w}W / ${s.l}L`)}
+      ${statCard(3, 'Profit factor', s.pf, 'pf', '')}</div>
+      <div class="card"><h2>Trade history</h2>${trades.length ? `<div class="tablewrap"><table><thead><tr><th>Entered</th><th>Exited</th><th>Contract</th><th>Side</th><th class="r">Qty</th><th class="r">Entry</th><th class="r">Exit</th><th class="r">Ticks / contract</th><th class="r">Total ticks</th><th class="r">Net P&L</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">No trades yet.</div>'}</div>`;
+  }
+  const users = admin.users;
+  const rows = (users || []).map((u, i) => `<tr class="clickable" data-act="admin-user" data-user="${esc(u.username)}" style="--i:${Math.min(i, 24)}">
+    <td class="sym">${esc(u.username)}</td><td>${u.created ? new Date(u.created).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'}</td>
+    <td class="r num">${u.trades}</td><td class="r num">${u.open}</td><td class="r num">${u.closed ? ((u.wins / u.closed) * 100).toFixed(0) + '%' : '-'}</td>
+    <td class="r num ${cls(u.net)}"><b>${money(u.net, true)}</b></td><td class="r num">${money(u.startingBalance + u.net)}</td><td class="r"><button class="btn sm">View</button></td></tr>`).join('');
+  return `<div class="head"><div><h1>Admin</h1><div class="sub">${users ? `${users.length} account${users.length === 1 ? '' : 's'}` : ''} · journals are read-only here</div></div><div class="actions">${refresh}</div></div>
+    <div class="card">${admin.error ? `<div class="err">${esc(admin.error)}</div>` : !users ? '<div class="empty">Loading accounts...</div>' :
+      users.length ? `<div class="tablewrap"><table><thead><tr><th>Account</th><th>Joined</th><th class="r">Trades</th><th class="r">Open</th><th class="r">Win rate</th><th class="r">Net P&L</th><th class="r">Balance</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">No accounts.</div>'}</div>`;
+}
+
+function openMore() {
+  const items = [['contracts', 'Contracts'], ['settings', 'Settings'], ...(user && user.admin ? [['admin', 'Admin']] : [])];
+  openModal(`<h2>More</h2><div class="more-list">${items.map(([id, l]) => `<button class="btn" data-nav="${id}">${svgI(id)} ${l}</button>`).join('')}
+    <button class="btn danger" data-act="logout">Sign out${user ? ' (' + esc(user.username) + ')' : ''}</button></div>`);
+}
 
 /* =====================================================
    Loading screen
@@ -1074,6 +1413,7 @@ function showAuth(mode = 'login') {
     <div class="seg"><input type="radio" name="authmode" id="am-l" value="login" ${mode === 'login' ? 'checked' : ''}><label for="am-l">Sign in</label><input type="radio" name="authmode" id="am-r" value="register" ${mode === 'register' ? 'checked' : ''}><label for="am-r">Create account</label></div>
     <label class="f"><span>Username</span><input type="text" name="username" autocomplete="username" maxlength="24" autocapitalize="off" spellcheck="false"></label>
     <label class="f"><span>Password</span><input type="password" name="password" maxlength="200"></label>
+    <label class="f" id="acode" hidden><span>Admin setup code</span><input type="password" name="adminCode" autocomplete="off" maxlength="200"></label>
     <p class="mut" id="ahint" style="font-size:12px"></p>
     <div class="err" id="aerr"></div>
     <button class="btn primary" type="submit" id="asubmit"></button>
@@ -1088,9 +1428,15 @@ function setAuthMode(mode) {
   const reg = mode === 'register';
   $('#asubmit').textContent = reg ? 'Create account' : 'Sign in';
   $('#atag').textContent = reg ? 'Create an account to save your journal online.' : 'Sign in to open your journal.';
-  $('#ahint').textContent = reg ? 'Usernames are 3 to 24 letters, numbers, dots, dashes or underscores. Passwords need 8+ characters. Only one account can be created per network (IP address).' : '';
+  $('#ahint').textContent = reg ? 'Usernames are 3 to 24 letters, numbers, dots, dashes or underscores. Passwords need 8+ characters. Only one account can be created per network (IP address). The site administrator can view journals stored on this site.' : '';
   $('#af [name=password]').setAttribute('autocomplete', reg ? 'new-password' : 'current-password');
   $('#aerr').textContent = '';
+  syncAdminField();
+}
+function syncAdminField() {
+  const f = $('#af'); if (!f) return;
+  const show = f.dataset.mode === 'register' && String(f.elements.username.value).trim().toLowerCase() === 'admin';
+  $('#acode').hidden = !show;
 }
 async function submitAuth() {
   const f = $('#af'), fd = new FormData(f), mode = f.dataset.mode, err = $('#aerr'), btn = $('#asubmit');
@@ -1098,27 +1444,32 @@ async function submitAuth() {
   if (!username || !password) { err.textContent = 'Enter a username and password.'; return; }
   btn.disabled = true; err.textContent = '';
   try {
-    const r = await api(mode === 'register' ? 'register' : 'login', { username, password });
+    const body = { username, password };
+    if (mode === 'register' && !$('#acode').hidden) body.adminCode = fd.get('adminCode') || '';
+    const r = await api(mode === 'register' ? 'register' : 'login', body);
     if (!r.ok) { err.textContent = r.data.error || 'Something went wrong.'; btn.disabled = false; return; }
-    await enterApp(r.data.username);
+    await enterApp(r.data.username, r.data.admin);
   } catch (e) { err.textContent = 'Could not reach the server.'; btn.disabled = false; }
 }
 
-async function enterApp(username) {
+async function enterApp(username, isAdmin) {
   const r = await api('data');
   if (r.status === 401) { showAuth('login'); return; }
   if (!r.ok) { toast(r.data.error || 'Could not load your journal'); showAuth('login'); return; }
-  user = { username };
+  user = { username, admin: !!isAdmin };
   const fresh = !r.data.state;
   state = fresh ? normalize({ settings: loadPrefs() }) : normalize(r.data.state);
   ui.view = state.settings.lastView || 'overview';
-  ui.selDay = null;
+  if (ui.view === 'admin' && !user.admin) ui.view = 'overview';
+  if (!RENDER[ui.view]) ui.view = 'overview';
+  ui.selDay = null; admin.users = null; admin.detail = null; admin.detailName = null;
   applyTheme(false); applyStyle(); applyAnim();
   failing = false; setSync(fresh ? '' : 'Saved');
   if (fresh) save();
   $('#auth').classList.add('hide');
   document.body.classList.add('in');
   render({ scrollTop: true });
+  if (ui.view === 'admin') loadAdminUsers();
   runLoader();
 }
 
@@ -1154,7 +1505,7 @@ async function boot() {
   applyTheme(false); applyStyle(); applyAnim();
   try {
     const r = await api('me');
-    if (r.ok) { await enterApp(r.data.username); return; }
+    if (r.ok) { await enterApp(r.data.username, r.data.admin); return; }
   } catch (e) { /* offline: fall through to sign-in */ }
   showAuth('login');
 }
