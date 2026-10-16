@@ -51,7 +51,7 @@ const DEFAULT_CONTRACTS = [
   ['MES', 'Micro E-mini S&P 500',  0.25,  1.25, 0.40],
   ['NQ',  'E-mini Nasdaq-100',     0.25,  5,    1.25],
   ['MNQ', 'Micro E-mini Nasdaq-100', 0.25, 0.5, 0.40],
-  ['NNQ', 'Nano Nasdaq-100 ($0.20/pt)', 0.25, 0.05, 0.10],
+  ['NNQ', 'Nano Nasdaq-100 ($0.20/pt)', 0.5, 0.1, 0.10],
   ['YM',  'E-mini Dow',            1,     5,    1.25],
   ['MYM', 'Micro E-mini Dow',      1,     0.5,  0.40],
   ['RTY', 'E-mini Russell 2000',   0.1,   5,    1.25],
@@ -151,7 +151,13 @@ function normalize(s, d = defaultState()) {
     const nnq = { ...DEFAULT_CONTRACTS.find(c => c.symbol === 'NNQ') };
     out.contracts.splice(i >= 0 ? i + 1 : out.contracts.length, 0, nnq);
   }
-  out.seeded = Array.from(new Set([...(s.seeded || []), 'NNQ']));
+  // One-time fix: NNQ ticks in 0.5 points ($0.10), not 0.25. Corrects the contract (if never edited) and existing NNQ trades.
+  if (!(s.seeded || []).includes('NNQ-tick-0.5')) {
+    const nc = out.contracts.find(c => c.symbol === 'NNQ');
+    if (nc && nc.tickSize === 0.25 && Math.abs(nc.tickValue - 0.05) < 1e-9) { nc.tickSize = 0.5; nc.tickValue = 0.1; }
+    out.trades.forEach(t => { if (t.symbol === 'NNQ' && t.tick === 0.25 && Math.abs(t.pv - 0.2) < 1e-9) t.tick = 0.5; });
+  }
+  out.seeded = Array.from(new Set([...(s.seeded || []), 'NNQ', 'NNQ-tick-0.5']));
   out.startingBalance = Number.isFinite(+out.startingBalance) ? +out.startingBalance : 10000;
   return out;
 }
