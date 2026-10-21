@@ -1148,7 +1148,7 @@ setInterval(() => $$('[data-since]').forEach(el => { el.textContent = fmtDur(Dat
 /* =====================================================
    TradingView paper trading CSV import
    ===================================================== */
-let tvCtx = { fills: [], mapping: {}, file: '' };
+let tvCtx = { fills: [], pairs: null, mapping: {}, file: '' };
 
 function parseCSV(text) {
   text = text.replace(/^\uFEFF/, '');
@@ -1174,22 +1174,64 @@ function parseTvTime(v) {
   const s = String(v || '').trim(); if (!s) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/.exec(s);
   if (m && !m[7]) return { t: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}`, k: `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6] || '00'}` };
+  const mn = /^([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AaPp][Mm])?$/.exec(s);
+  if (mn) {
+    const mo = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(mn[1].toLowerCase());
+    if (mo >= 0) {
+      let h = +mn[4]; const ap = (mn[7] || '').toLowerCase();
+      if (ap === 'pm' && h < 12) h += 12;
+      if (ap === 'am' && h === 12) h = 0;
+      const ds = `${mn[3]}-${pad(mo + 1)}-${pad(+mn[2])}T${pad(h)}:${mn[5]}`;
+      return { t: ds, k: `${ds}:${mn[6] || '00'}` };
+    }
+  }
   const d = new Date(m ? s.replace(' ', 'T') : s);
   if (isNaN(d)) return null;
   return { t: localStr(d), k: localStr(d, true) };
 }
 const num = v => { const n = parseFloat(String(v == null ? '' : v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? n : null; };
 
+// TradingView "Trade history" export: one Entry row and one Exit row per trade, linked by "Trade number".
+// Commission there is the round-trip total for the trade, so it is split into a per-contract, per-side fee later.
+function parseTvTradeHistory(rows, head, col) {
+  const iSym = col('symbol', 'instrument'), iNo = col('trade number'), iType = col('type'), iTime = col('date and time');
+  const iPrice = col('price'), iQty = col('size (qty)', 'qty', 'quantity'), iFee = col('commission usd', 'commission', 'fee', 'fees'), iId = col('order id');
+  if (iSym < 0 || iNo < 0 || iType < 0 || iTime < 0 || iPrice < 0 || iQty < 0)
+    throw new Error("Couldn't find the expected columns (Symbol, Trade number, Type, Date and time, Price, Size (qty)).");
+  const groups = new Map(); let skipped = 0;
+  rows.slice(1).forEach(r => {
+    const m = /^(entry|exit)\s+(long|short)/i.exec((r[iType] || '').trim());
+    const sym = (r[iSym] || '').trim(), no = (r[iNo] || '').trim(), time = parseTvTime(r[iTime]);
+    const price = num(r[iPrice]), qty = num(r[iQty]);
+    if (!m || !sym || !no || !time || price == null || !(qty > 0)) { skipped++; return; }
+    const gk = sym + '|' + no;
+    const g = groups.get(gk) || { sym, side: m[2].toLowerCase(), qty, feeTotal: null, entry: null, exit: null };
+    g[m[1].toLowerCase()] = { price, time: time.t, key: time.k, id: iId >= 0 ? (r[iId] || '').trim() : '' };
+    if (iFee >= 0 && num(r[iFee]) != null) g.feeTotal = num(r[iFee]);
+    groups.set(gk, g);
+  });
+  const pairs = [], fills = [];
+  groups.forEach(g => {
+    if (!g.entry) { skipped++; return; }
+    pairs.push(g);
+    fills.push({ sym: g.sym, time: g.entry.time, key: g.entry.key });
+    if (g.exit) fills.push({ sym: g.sym, time: g.exit.time, key: g.exit.key });
+  });
+  if (!pairs.length) throw new Error('No trades found in that file.');
+  return { fills, pairs, skipped };
+}
+
 function parseTvFills(text) {
   const rows = parseCSV(text);
   if (rows.length < 2) throw new Error('That file looks empty.');
   const head = rows[0].map(h => h.trim().toLowerCase());
   const col = (...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+  if (head.includes('trade number') && head.includes('type') && head.includes('date and time')) return parseTvTradeHistory(rows, head, col);
   const iSym = col('symbol', 'instrument'), iSide = col('side'), iQty = col('qty', 'quantity', 'filled qty');
   const iFill = col('fill price', 'avg fill price', 'average fill price'), iPrice = col('price'), iStatus = col('status');
   const iFee = col('commission', 'fee', 'fees'), iTime = col('closing time', 'fill time', 'time', 'placing time'), iId = col('order id', 'id');
   if (iSym < 0 || iSide < 0 || iQty < 0 || (iFill < 0 && iPrice < 0) || iTime < 0)
-    throw new Error("Couldn't find the expected columns (Symbol, Side, Qty, Fill Price, Closing Time). Export the Order History from TradingView with all columns ticked.");
+    throw new Error("Couldn't find the expected columns (Symbol, Side, Qty, Fill Price, Closing Time). Export the Trade history or Order History from TradingView paper trading.");
   const fills = []; let skipped = 0;
   rows.slice(1).forEach((r, idx) => {
     if (iStatus >= 0 && !/^filled/i.test((r[iStatus] || '').trim())) { skipped++; return; }
@@ -1244,6 +1286,21 @@ function buildTvTrades(fills, mapping) {
   return out;
 }
 
+// Trades TradingView already paired (Trade history export). A trade with no exit row is an open position.
+function buildTvPairTrades(pairs, mapping) {
+  const out = [];
+  pairs.forEach(g => {
+    const sym = mapping[g.sym]; if (!sym) return;
+    const c = getContract(sym); if (!c) return;
+    const fee = g.feeTotal != null ? round(g.feeTotal / g.qty / (g.exit ? 2 : 1), 4) : c.fee;
+    out.push({ id: uid(), symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: 'Imported from TradingView paper trading',
+      side: g.side, qty: g.qty, entryPrice: g.entry.price, entryTime: g.entry.time,
+      exitPrice: g.exit ? g.exit.price : null, exitTime: g.exit ? g.exit.time : null, fee,
+      src: `tv:${g.exit ? '' : 'open:'}${g.entry.id || g.entry.key}:${g.exit ? (g.exit.id || g.exit.key) + ':' : ''}${g.qty}`, mark: null });
+  });
+  return out;
+}
+
 function pickTvFile() {
   const inp = document.createElement('input');
   inp.type = 'file'; inp.accept = '.csv,text/csv,text/plain';
@@ -1252,9 +1309,9 @@ function pickTvFile() {
     const r = new FileReader();
     r.onload = () => {
       try {
-        const { fills, skipped } = parseTvFills(String(r.result));
+        const { fills, pairs, skipped } = parseTvFills(String(r.result));
         const mapping = {}; fills.forEach(f => { if (!(f.sym in mapping)) mapping[f.sym] = guessContract(f.sym); });
-        tvCtx = { fills, mapping, file: file.name, skipped };
+        tvCtx = { fills, pairs, mapping, file: file.name, skipped };
         openTvModal();
       } catch (e) { toast(e.message || 'Could not read that file'); }
     };
@@ -1262,12 +1319,23 @@ function pickTvFile() {
   };
   inp.click();
 }
+// A trade is a duplicate if one already exists with the same symbol, side, qty, entry/exit date-time and entry/exit price.
+const tvSig = t => [t.symbol, t.side, t.qty, t.entryTime, round(t.entryPrice, 6), t.exitTime || '', t.exitPrice == null ? '' : round(t.exitPrice, 6)].join('|');
 function tvPlan() {
-  const trades = buildTvTrades(tvCtx.fills, tvCtx.mapping);
-  const have = new Set(state.trades.map(t => t.src).filter(Boolean));
-  const closed = trades.filter(t => t.exitPrice != null), open = trades.filter(t => t.exitPrice == null);
-  const fresh = closed.filter(t => !have.has(t.src));
-  return { trades, fresh, open, dup: closed.length - fresh.length };
+  const trades = tvCtx.pairs ? buildTvPairTrades(tvCtx.pairs, tvCtx.mapping) : buildTvTrades(tvCtx.fills, tvCtx.mapping);
+  const have = new Set(state.trades.map(tvSig));
+  const openHave = state.trades.filter(isOpen);
+  const fresh = [], open = [], closes = []; let dup = 0;
+  trades.forEach(t => {
+    const sig = tvSig(t);
+    if (have.has(sig)) { dup++; return; }
+    have.add(sig);
+    if (t.exitPrice == null) { open.push(t); return; }
+    // An open position from an earlier import that has since closed: fill in its exit rather than adding a second copy.
+    const i = openHave.findIndex(o => o.symbol === t.symbol && o.side === t.side && o.qty === t.qty && o.entryTime === t.entryTime && round(o.entryPrice, 6) === round(t.entryPrice, 6));
+    if (i >= 0) closes.push({ target: openHave.splice(i, 1)[0], t }); else fresh.push(t);
+  });
+  return { trades, fresh, open, closes, dup };
 }
 function openTvModal() {
   const counts = {}; tvCtx.fills.forEach(f => counts[f.sym] = (counts[f.sym] || 0) + 1);
@@ -1275,25 +1343,26 @@ function openTvModal() {
   const rows = Object.keys(counts).map(raw => `<tr><td class="sym">${esc(raw)}</td><td class="r num">${counts[raw]}</td><td><select data-tvmap="${esc(raw)}" style="min-width:150px">
     <option value="">Skip this symbol</option>${state.contracts.map(c => `<option value="${esc(c.symbol)}" ${tvCtx.mapping[raw] === c.symbol ? 'selected' : ''}>${esc(c.symbol)}</option>`).join('')}</select></td></tr>`).join('');
   openModal(`<form id="tvf" novalidate><h2>Import from TradingView</h2>
-    <p class="mut" style="margin-bottom:10px">${esc(tvCtx.file)}: ${tvCtx.fills.length} filled orders${tvCtx.skipped ? ` (${tvCtx.skipped} other rows ignored)` : ''}. Fills are paired first-in-first-out into trades; anything left over becomes an open position.</p>
-    <div class="tablewrap"><table><thead><tr><th>Symbol in file</th><th class="r">Fills</th><th>Contract</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="mut" style="margin-bottom:10px">${esc(tvCtx.file)}: ${tvCtx.pairs ? tvCtx.pairs.length + ' trades' : tvCtx.fills.length + ' filled orders'}${tvCtx.skipped ? ` (${tvCtx.skipped} other rows ignored)` : ''}. Fills are paired first-in-first-out into trades; anything left over becomes an open position.</p>
+    <div class="tablewrap"><table><thead><tr><th>Symbol in file</th><th class="r">Rows</th><th>Contract</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="preview" id="tvsum" style="margin-top:12px"></div>
-    <p class="mut" style="font-size:12px;margin-top:8px">First fill: ${esc(fmtDateTime(first.time))}. Times are used exactly as written in the file, so check this matches what you expect. Re-importing the same file won't create duplicates, and open positions from an earlier import are replaced by the new snapshot.</p>
+    <p class="mut" style="font-size:12px;margin-top:8px">First fill: ${esc(fmtDateTime(first.time))}. Times are used exactly as written in the file, so check this matches what you expect. Only new trades are added: anything already in your journal with the same date, time and price is skipped, and nothing existing is deleted.</p>
     <div class="modal-actions"><button type="button" class="btn" data-act="modal-close">Cancel</button><button type="submit" class="btn primary" id="tvgo">Import</button></div></form>`);
   tvRefresh();
 }
 function tvRefresh() {
   const el = $('#tvsum'); if (!el) return;
   const p = tvPlan();
-  el.innerHTML = `<b>${p.fresh.length}</b> new closed trade${p.fresh.length === 1 ? '' : 's'} · <b>${p.open.length}</b> open position${p.open.length === 1 ? '' : 's'}${p.dup ? ` · <span class="mut">${p.dup} already imported, will be skipped</span>` : ''}`;
-  $('#tvgo').disabled = !(p.fresh.length || p.open.length);
+  el.innerHTML = `<b>${p.fresh.length}</b> new closed trade${p.fresh.length === 1 ? '' : 's'} · <b>${p.open.length}</b> open position${p.open.length === 1 ? '' : 's'}${p.closes.length ? ` · <b>${p.closes.length}</b> open position${p.closes.length === 1 ? '' : 's'} now closed` : ''}${p.dup ? ` · <span class="mut">${p.dup} already in your journal, will be skipped</span>` : ''}`;
+  $('#tvgo').disabled = !(p.fresh.length || p.open.length || p.closes.length);
 }
 function applyTvImport() {
   const p = tvPlan();
-  state.trades = state.trades.filter(t => !(t.src && t.src.startsWith('tv:open:') && isOpen(t)));
+  p.closes.forEach(({ target, t }) => { target.exitPrice = t.exitPrice; target.exitTime = t.exitTime; target.fee = t.fee; target.mark = null; });
   p.fresh.concat(p.open).forEach(t => state.trades.push(t));
   save(); closeModal(); render({ enter: false });
-  toast(`Imported ${p.fresh.length} trade${p.fresh.length === 1 ? '' : 's'} and ${p.open.length} open position${p.open.length === 1 ? '' : 's'}`);
+  const added = p.fresh.length + p.closes.length;
+  toast(`Imported ${added} trade${added === 1 ? '' : 's'}${p.open.length ? ` and ${p.open.length} open position${p.open.length === 1 ? '' : 's'}` : ''}${p.dup ? `, skipped ${p.dup} duplicate${p.dup === 1 ? '' : 's'}` : ''}`);
 }
 
 /* =====================================================
