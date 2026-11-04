@@ -90,11 +90,22 @@ TradingView has no public API for paper-trading accounts, so there is no live co
 
 1. In TradingView: open a chart > Paper Trading panel > Order History tab > tick all columns (Side, Type, Qty, Fill Price,
    Status, Commission, Closing Time, Order ID) > TradingView menu > **Export data** > Order History > Export.
-2. In Trade Journal: Trade log (or Settings > Data) > **Import TradingView CSV**.
+2. In Trade Journal: Trade log (or Settings > Data) > **Import trades CSV**.
 3. Check the symbol mapping (NQ1!, MESZ2026 and so on are matched to your contracts), then Import.
 
 Filled orders are paired first-in-first-out into closed trades; whatever is still open becomes an open position. Re-importing
 is safe: trades already imported are skipped and old open-position snapshots are replaced.
+
+## NinjaTrader
+
+Use the same **Import trades CSV** button with a NinjaTrader orders export (the "orders filled" CSV with columns Symbol, Side,
+Type, Qty, Filled Qty, Avg Fill Price, Update Time, Order ID). The file is detected automatically.
+
+- Only the filled quantity counts, so cancelled or unfilled orders are ignored.
+- Contract codes such as `MNQZ6` are matched to your contract list (MNQ).
+- Fills are paired first-in-first-out, exactly like the TradingView import, and P&L uses your contract's tick value.
+- The export has no commissions, so each contract's default fee from Settings is used.
+- Times are used exactly as written in the file (no timezone conversion).
 
 Open positions have a **Current price** box (type the price, see unrealized P&L) and a **Chart** link that opens the
 contract on TradingView. There is no free official real-time futures feed, so prices are entered by hand.
