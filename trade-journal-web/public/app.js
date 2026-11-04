@@ -445,7 +445,7 @@ function viewTrades() {
 
   return `
   <div class="head"><div><h1>Trade log</h1><div class="sub">${list.length} trade${list.length === 1 ? '' : 's'} · net <span class="${cls(tot.net)}">${money(tot.net, true)}</span></div></div>
-    <div class="actions"><button class="btn" data-act="import-tv">Import TradingView CSV</button><button class="btn" data-act="new-open">Add open position</button><button class="btn primary" data-act="new-closed">Add completed trade</button></div></div>
+    <div class="actions"><button class="btn" data-act="import-tv">Import trades CSV</button><button class="btn" data-act="new-open">Add open position</button><button class="btn primary" data-act="new-closed">Add completed trade</button></div></div>
   <div class="card">
     <div class="actions" style="margin-bottom:12px">
       <input type="search" id="fq" placeholder="Search contract or notes" value="${esc(f.q)}" style="max-width:240px">
@@ -684,7 +684,7 @@ function viewSettings() {
     <div class="setrow"><div>Animations<small>Turn off for instant transitions.</small></div>
       <label class="switch"><input type="checkbox" data-set="animations" ${st.animations ? 'checked' : ''}><i></i></label></div></div>
   <div class="card"><h2>Data</h2>
-    <div class="actions"><button class="btn" data-act="import-tv">Import TradingView CSV</button><button class="btn" data-act="export">Export backup (JSON)</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="reset-all">Erase all data</button></div>
+    <div class="actions"><button class="btn" data-act="import-tv">Import trades CSV</button><button class="btn" data-act="export">Export backup (JSON)</button><button class="btn" data-act="import">Import backup</button><button class="btn danger" data-act="reset-all">Erase all data</button></div>
     <input type="file" id="importFile" accept="application/json,.json" hidden>
     <p class="mut" style="margin-top:10px">Your journal is stored in your account. Backups are a good idea before erasing or importing.</p></div>`;
 }
@@ -1148,7 +1148,8 @@ setInterval(() => $$('[data-since]').forEach(el => { el.textContent = fmtDur(Dat
 /* =====================================================
    TradingView paper trading CSV import
    ===================================================== */
-let tvCtx = { fills: [], pairs: null, mapping: {}, file: '' };
+let tvCtx = { fills: [], pairs: null, mapping: {}, file: '', source: 'TradingView' };
+const tvNote = () => tvCtx.source === 'NinjaTrader' ? 'Imported from NinjaTrader' : 'Imported from TradingView paper trading';
 
 function parseCSV(text) {
   text = text.replace(/^\uFEFF/, '');
@@ -1221,11 +1222,33 @@ function parseTvTradeHistory(rows, head, col) {
   return { fills, pairs, skipped };
 }
 
+// NinjaTrader "Orders" export (filled orders): one row per order, newest first.
+// Qty is the size that was ordered; Filled Qty is what actually filled, so cancelled/unfilled rows (Filled Qty 0) are skipped.
+// There is no commission column, so fees fall back to the contract's default fee in Settings.
+function parseNtFills(rows, col) {
+  const iSym = col('symbol', 'instrument'), iSide = col('side', 'action'), iQty = col('filled qty'), iPrice = col('avg fill price');
+  const iTime = col('update time'), iId = col('order id'), iStatus = col('status'), iFee = col('commission');
+  if (iSym < 0 || iSide < 0 || iQty < 0 || iPrice < 0 || iTime < 0)
+    throw new Error("Couldn't find the expected NinjaTrader columns (Symbol, Side, Filled Qty, Avg Fill Price, Update Time).");
+  const fills = []; let skipped = 0;
+  rows.slice(1).forEach((r, idx) => {
+    if (iStatus >= 0 && (r[iStatus] || '').trim() && !/^filled/i.test((r[iStatus] || '').trim())) { skipped++; return; }
+    const side = /^b/i.test((r[iSide] || '').trim()) ? 'buy' : /^s/i.test((r[iSide] || '').trim()) ? 'sell' : null;
+    const qty = num(r[iQty]), price = num(r[iPrice]), time = parseTvTime(r[iTime]), sym = (r[iSym] || '').trim();
+    if (!side || !(qty > 0) || price == null || !time || !sym) { skipped++; return; }
+    const id = iId >= 0 ? (r[iId] || '').trim() : '';
+    fills.push({ sym, side, qty, price, time: time.t, key: time.k, id: id || `${time.k}@${price}`, idn: parseInt(id.replace(/\D/g, ''), 10) || 0, ord: idx, fee: iFee >= 0 ? num(r[iFee]) : null });
+  });
+  if (!fills.length) throw new Error('No filled orders found in that file.');
+  return { fills, skipped, source: 'NinjaTrader' };
+}
+
 function parseTvFills(text) {
   const rows = parseCSV(text);
   if (rows.length < 2) throw new Error('That file looks empty.');
   const head = rows[0].map(h => h.trim().toLowerCase());
   const col = (...names) => { for (const n of names) { const i = head.indexOf(n); if (i >= 0) return i; } return -1; };
+  if (head.includes('filled qty') && head.includes('avg fill price') && head.includes('update time')) return parseNtFills(rows, col);
   if (head.includes('trade number') && head.includes('type') && head.includes('date and time')) return parseTvTradeHistory(rows, head, col);
   const iSym = col('symbol', 'instrument'), iSide = col('side'), iQty = col('qty', 'quantity', 'filled qty');
   const iFill = col('fill price', 'avg fill price', 'average fill price'), iPrice = col('price'), iStatus = col('status');
@@ -1267,7 +1290,7 @@ function buildTvTrades(fills, mapping) {
   Object.entries(bySym).forEach(([sym, list]) => {
     const c = getContract(sym); if (!c) return;
     list.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.idn - b.idn || a.ord - b.ord));
-    const base = { symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: 'Imported from TradingView paper trading' };
+    const base = { symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: tvNote() };
     const lots = [];
     list.forEach(f => {
       const feePer = f.fee != null ? f.fee / f.qty : c.fee, dir = f.side === 'buy' ? 'long' : 'short';
@@ -1293,7 +1316,7 @@ function buildTvPairTrades(pairs, mapping) {
     const sym = mapping[g.sym]; if (!sym) return;
     const c = getContract(sym); if (!c) return;
     const fee = g.feeTotal != null ? round(g.feeTotal / g.qty / (g.exit ? 2 : 1), 4) : c.fee;
-    out.push({ id: uid(), symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: 'Imported from TradingView paper trading',
+    out.push({ id: uid(), symbol: sym, tick: c.tickSize, pv: pointValue(c), notes: tvNote(),
       side: g.side, qty: g.qty, entryPrice: g.entry.price, entryTime: g.entry.time,
       exitPrice: g.exit ? g.exit.price : null, exitTime: g.exit ? g.exit.time : null, fee,
       src: `tv:${g.exit ? '' : 'open:'}${g.entry.id || g.entry.key}:${g.exit ? (g.exit.id || g.exit.key) + ':' : ''}${g.qty}`, mark: null });
@@ -1309,9 +1332,9 @@ function pickTvFile() {
     const r = new FileReader();
     r.onload = () => {
       try {
-        const { fills, pairs, skipped } = parseTvFills(String(r.result));
+        const { fills, pairs, skipped, source } = parseTvFills(String(r.result));
         const mapping = {}; fills.forEach(f => { if (!(f.sym in mapping)) mapping[f.sym] = guessContract(f.sym); });
-        tvCtx = { fills, pairs, mapping, file: file.name, skipped };
+        tvCtx = { fills, pairs, mapping, file: file.name, skipped, source: source || 'TradingView' };
         openTvModal();
       } catch (e) { toast(e.message || 'Could not read that file'); }
     };
@@ -1342,7 +1365,7 @@ function openTvModal() {
   const first = tvCtx.fills.slice().sort((a, b) => (a.key < b.key ? -1 : 1))[0];
   const rows = Object.keys(counts).map(raw => `<tr><td class="sym">${esc(raw)}</td><td class="r num">${counts[raw]}</td><td><select data-tvmap="${esc(raw)}" style="min-width:150px">
     <option value="">Skip this symbol</option>${state.contracts.map(c => `<option value="${esc(c.symbol)}" ${tvCtx.mapping[raw] === c.symbol ? 'selected' : ''}>${esc(c.symbol)}</option>`).join('')}</select></td></tr>`).join('');
-  openModal(`<form id="tvf" novalidate><h2>Import from TradingView</h2>
+  openModal(`<form id="tvf" novalidate><h2>Import from ${esc(tvCtx.source)}</h2>
     <p class="mut" style="margin-bottom:10px">${esc(tvCtx.file)}: ${tvCtx.pairs ? tvCtx.pairs.length + ' trades' : tvCtx.fills.length + ' filled orders'}${tvCtx.skipped ? ` (${tvCtx.skipped} other rows ignored)` : ''}. Fills are paired first-in-first-out into trades; anything left over becomes an open position.</p>
     <div class="tablewrap"><table><thead><tr><th>Symbol in file</th><th class="r">Rows</th><th>Contract</th></tr></thead><tbody>${rows}</tbody></table></div>
     <div class="preview" id="tvsum" style="margin-top:12px"></div>
